@@ -9,9 +9,10 @@ Why this exists:
   file opened fine in Microsoft Word.
 
   This module renders the exact same CV data as HTML+CSS and converts it to
-  PDF with wkhtmltopdf (a small, well-supported apt package). Browsers/
-  WebKit shape Arabic correctly and predictably, so this sidesteps the whole
-  class of font/shaping bugs.
+  PDF with WeasyPrint (a pure-Python PDF renderer -- no special system binary
+  needed beyond common libraries already available on Debian/Ubuntu). It
+  shapes Arabic text correctly and predictably, sidestepping the whole class
+  of font/shaping bugs LibreOffice has.
 
   The .docx output is UNCHANGED and still produced by fill_cv() in app.py --
   this only replaces how the PDF is made.
@@ -26,8 +27,6 @@ from pathlib import Path
 TEMPLATE_PATH = Path(__file__).parent / "cv_template.html"
 
 # Put your two logo files here (same ones already used in the Word templates).
-# Export them once from the .docx (word/media/imageN.jpeg) and drop them next
-# to this file, e.g. cv_core/logo_diamond.jpeg and cv_core/logo_mhr.jpeg
 LOGO_LEFT = Path(__file__).parent / "logo_diamond.jpeg"
 LOGO_RIGHT = Path(__file__).parent / "logo_mhr.jpeg"
 
@@ -41,12 +40,6 @@ def _img_to_data_uri(path: Path) -> str:
     return f"data:image/{mime};base64,{b64}"
 
 
-def _img_file_to_data_uri_bytes(data: bytes, ext: str = "jpeg") -> str:
-    mime = "jpeg" if ext.lower() in ("jpg", "jpeg") else ext.lower()
-    b64 = base64.b64encode(data).decode()
-    return f"data:image/{mime};base64,{b64}"
-
-
 def _find_wkhtmltopdf():
     for name in ("wkhtmltopdf", "wkhtmltopdf.exe"):
         p = shutil.which(name)
@@ -57,6 +50,36 @@ def _find_wkhtmltopdf():
         if Path(p).exists():
             return p
     return None
+
+
+def _render_with_weasyprint(html: str, pdf_out: Path) -> bool:
+    try:
+        from weasyprint import HTML
+    except Exception:
+        return False
+    try:
+        HTML(string=html, base_url=str(TEMPLATE_PATH.parent)).write_pdf(str(pdf_out))
+    except Exception:
+        return False
+    return pdf_out.exists() and pdf_out.stat().st_size > 0
+
+
+def _render_with_wkhtmltopdf(html: str, pdf_out: Path) -> bool:
+    wk = _find_wkhtmltopdf()
+    if not wk:
+        return False
+    with tempfile.TemporaryDirectory() as td:
+        html_path = Path(td) / "cv.html"
+        html_path.write_text(html, encoding="utf-8")
+        try:
+            subprocess.run(
+                [wk, "--enable-local-file-access", "--quiet",
+                 str(html_path), str(pdf_out)],
+                capture_output=True, timeout=60, check=False,
+            )
+        except Exception:
+            return False
+    return pdf_out.exists() and pdf_out.stat().st_size > 0
 
 
 def render_pdf_via_html(data: dict, images: dict, pdf_out: Path) -> bool:
@@ -89,20 +112,10 @@ def render_pdf_via_html(data: dict, images: dict, pdf_out: Path) -> bool:
         else:
             html = html.replace(ph, "")
 
-    with tempfile.TemporaryDirectory() as td:
-        html_path = Path(td) / "cv.html"
-        html_path.write_text(html, encoding="utf-8")
-
-        wk = _find_wkhtmltopdf()
-        if not wk:
-            return False
-        try:
-            subprocess.run(
-                [wk, "--enable-local-file-access", "--quiet",
-                 str(html_path), str(pdf_out)],
-                capture_output=True, timeout=60, check=False,
-            )
-        except Exception:
-            return False
-
-    return pdf_out.exists() and pdf_out.stat().st_size > 0
+    # Try WeasyPrint first (pure-Python, no missing-apt-package risk).
+    if _render_with_weasyprint(html, pdf_out):
+        return True
+    # Fall back to wkhtmltopdf if it happens to be installed.
+    if _render_with_wkhtmltopdf(html, pdf_out):
+        return True
+    return False

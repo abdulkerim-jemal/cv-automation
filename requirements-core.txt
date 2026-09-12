@@ -6,4 +6,4 @@ pytesseract>=0.3.13
 PyMuPDF>=1.24
 numpy>=1.26
 opencv-python-headless>=4.9
-docx2pdf>=0.1.8
+weasyprint>=62.0
