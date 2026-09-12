@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<title>CV</title>
+<style>
+  @page { size: A4; margin: 8mm; }
+  * { box-sizing: border-box; }
+  body { font-family: 'DejaVu Sans', Arial, sans-serif; font-size: 11px; margin: 0; color:#000; }
+  .page { border: 5px double #7030A0; padding: 5mm; position: relative; }
+  .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .header img { height: 55px; }
+  .header h1 { color: #C9A227; font-size: 16px; text-align: center; margin: 0; flex: 1; }
+  .header h1 span { display:block; font-size: 13px; }
+  table.info, table.data { width: 100%; border-collapse: collapse; margin-top: 3px; }
+  table.info td, table.data td { border: 1px solid #000; padding: 2px 5px; vertical-align: top; }
+  .label { font-weight: bold; }
+  .banner { background: #00B0F0; height: 8px; margin: 3px 0; }
+  .two-col { display: flex; gap: 3px; }
+  .two-col .col { flex: 1; }
+  .section-title { display: flex; justify-content: space-between; font-weight: bold; color: #FF0000;
+                   font-size: 13px; padding: 2px 4px; border: 1px solid #000; border-bottom: none; }
+  .section-title .ar { color: #4472C4; font-weight: bold; }
+  td.ar { text-align: right; direction: rtl; }
+  td.answer-yes { color: #FF0000; font-weight: bold; }
+  td.answer-no  { color: #000; font-weight: bold; }
+  .photo-frame { border: 1px solid #000; display: flex; align-items: center; justify-content: center;
+                 overflow: hidden; margin-top: 4px; }
+  .photo-frame img { max-width: 100%; max-height: 100%; }
+  .row-flex { display: flex; gap: 5px; margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <img src="{{LOGO_LEFT}}" alt="logo">
+    <h1>DIAMOND FOREIGN EMPLOYMENT AGENT<span>PLC ETHIOPIAN HOUSE MAID</span></h1>
+    <img src="{{LOGO_RIGHT}}" alt="logo">
+  </div>
+
+  <table class="info">
+    <tr><td class="label" width="22%">NAME IN FULL</td><td>{{NAME}}</td><td class="ar" width="14%">الاسم الكامل</td></tr>
+    <tr><td class="label">HOME ADDRESS</td><td>{{HOME_ADDRESS}}</td><td class="ar">عنوان المنزل</td></tr>
+    <tr><td class="label">Relative</td><td>{{RELATIVE}}</td><td></td></tr>
+    <tr><td class="label">POSITION APPLIED</td><td>HOUSE MAID</td><td class="ar">تم تطبيق الموقع</td></tr>
+    <tr><td class="label">MONTHLY SALARY</td><td>1000 SAR</td><td class="ar">راتب شهري</td></tr>
+    <tr><td class="label">CONTRACT PERIOD</td><td>TWO ( 2 ) YEARS</td><td class="ar">مدة العقد</td></tr>
+  </table>
+
+  <div class="banner"></div>
+
+  <div class="two-col">
+    <div class="col">
+      <div class="section-title">PASSPORT DETAILS <span class="ar">تفاصيل جواز السفر</span></div>
+      <table class="data">
+        <tr><td class="label">PASSPORT NO.</td><td>{{PASSPORT_NO}}</td><td class="ar">رقم جواز السفر</td></tr>
+        <tr><td class="label">DATE OF ISSUED</td><td>{{ISSUE_DATE}}</td><td class="ar">تاريخ الإصدار</td></tr>
+        <tr><td class="label">PLACE OF ISSUED</td><td>ADDIS ABABA</td><td class="ar">مكان الإصدار</td></tr>
+        <tr><td class="label">DATE OF EXPIRY</td><td>{{EXPIRY_DATE}}</td><td class="ar">تاريخ الانتهاء</td></tr>
+      </table>
+      <div class="photo-frame" style="width:100%; height:48mm;">{{IMAGE_FULL}}</div>
+    </div>
+    <div class="col">
+      <div class="section-title">PERSONAL INFORMATION <span class="ar">معلومات شخصية</span></div>
+      <table class="data">
+        <tr><td class="label">NATIONALITY</td><td>ETHIOPIA</td><td class="ar">انجنسيه</td></tr>
+        <tr><td class="label">RELIGION</td><td style="color:#FF0000;font-weight:bold;">{{RELIGION}}</td><td class="ar">ديانتها</td></tr>
+        <tr><td class="label">DATE OF BIRTH</td><td>{{DOB}}</td><td class="ar">تاريخ الميلاد</td></tr>
+        <tr><td class="label">AGE</td><td>{{AGE}}</td><td class="ar">العمر</td></tr>
+        <tr><td class="label">PLACE OF BIRTH</td><td>{{HOME_ADDRESS}}</td><td class="ar">مكان الميلاد</td></tr>
+        <tr><td class="label">MARITAL STATUS</td><td>{{MARITAL_STATUS}}</td><td class="ar">الحالة الاجتماعية</td></tr>
+        <tr><td class="label">NO. OF CHILDREN</td><td>{{NO_OF_CHILDREN}}</td><td class="ar">عدد الاطفال</td></tr>
+        <tr><td class="label">HEIGHT</td><td></td><td class="ar">الطول</td></tr>
+        <tr><td class="label">WEIGHT</td><td></td><td class="ar">الوزن</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="banner"></div>
+  <div class="section-title">EDUCATIONAL BACKGROUND <span class="ar">خلفية تعليمية</span></div>
+  <table class="data">
+    <tr><td class="label" width="24%">CERTIFICATE OF COMPETENCY</td><td>DOMESTIC WORK COURSE COMPLETED</td><td class="ar answer-yes" width="12%">نعم</td></tr>
+    <tr><td class="label">ELEMENTARY</td><td>YES</td><td class="ar answer-yes">نعم</td></tr>
+    <tr><td class="label">HIGH SCHOOL</td><td>NO</td><td class="ar answer-no">لا</td></tr>
+    <tr><td class="label">COLLEGE</td><td>NO</td><td class="ar answer-no">لا</td></tr>
+  </table>
+
+  <div class="banner"></div>
+  <div class="section-title">LANGUAGES SPEAKING <span class="ar">التحدث باللغات</span></div>
+  <table class="data">
+    <tr><td class="label" width="30%">ENGLISH</td><td width="20%">POOR</td><td class="ar">الانجهيزيه</td></tr>
+    <tr><td class="label">ARABIC</td><td>POOR</td><td class="ar">فقير</td></tr>
+    <tr><td class="label">AMHARIC</td><td>GOOD</td><td class="ar">جيد</td></tr>
+    <tr><td class="label">OROMIYA</td><td>GOOD</td><td class="ar">جيد</td></tr>
+  </table>
+
+  <div class="banner"></div>
+  <div class="section-title">WORK EXPERIENCE <span class="ar">خبرة في العمل</span></div>
+  <table class="data">
+    <tr><td class="label">POSITION</td><td class="label">COUNTRY</td><td class="label">YEAR OF EXPERIENCE</td></tr>
+    <tr><td>{{POSITION}}</td><td>{{COUNTRY}}</td><td>{{YEARS_EXP}}</td></tr>
+  </table>
+
+  <div class="banner"></div>
+  <div class="section-title">SKILLS <span class="ar">مهارات</span></div>
+  <table class="data">
+    <tr><td class="label" width="40%">BABY SITTING</td><td class="answer-yes" width="15%">YES</td><td class="ar answer-yes">نعم</td></tr>
+    <tr><td class="label">WASHING KITCHEN DISHES</td><td class="answer-yes">YES</td><td class="ar answer-yes">نعم</td></tr>
+    <tr><td class="label">CLEANING</td><td class="answer-yes">YES</td><td class="ar answer-yes">نعم</td></tr>
+    <tr><td class="label">WASHING &amp; IRONING</td><td class="answer-yes">YES</td><td class="ar answer-yes">نعم</td></tr>
+    <tr><td class="label">NANNY</td><td class="answer-yes">YES</td><td class="ar answer-yes">نعم</td></tr>
+    <tr><td class="label">AREBIC COOKING</td><td class="answer-no">NO</td><td class="ar answer-no">لا</td></tr>
+    <tr><td colspan="2" style="color:#FF0000;font-weight:bold;text-align:center;">{{YEARS_EXP2}}</td>
+        <td style="color:#FF0000;font-weight:bold;text-align:center;">** EXPERIANCED **</td></tr>
+  </table>
+
+  <div class="row-flex">
+    <div class="photo-frame" style="width:35mm; height:42mm;">{{IMAGE_3X4}}</div>
+    <div class="photo-frame" style="width:65mm; height:42mm;">{{IMAGE_PASSPORT}}</div>
+  </div>
+</div>
+</body>
+</html>

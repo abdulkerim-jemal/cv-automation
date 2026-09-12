@@ -1,0 +1,12 @@
+# Locks the app to one simple, grey light theme by default, so it doesn't
+# switch to Streamlit's dark theme when a visitor's OS/browser prefers dark
+# mode. Visitors can still override it manually from the vertical-dots menu
+# -> Settings -> Theme if they really want dark mode - this just stops it
+# from happening automatically.
+[theme]
+base = "light"
+primaryColor = "#5a5a60"
+backgroundColor = "#f2f2f3"
+secondaryBackgroundColor = "#e9e9eb"
+textColor = "#2b2b2e"
+font = "sans serif"

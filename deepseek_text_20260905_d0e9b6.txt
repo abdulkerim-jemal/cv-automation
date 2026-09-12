@@ -1,0 +1,17 @@
+
+---
+
+### Summary of Changes
+
+- **Drag‑crop** – Added `streamlit-drawable-canvas` component; a toggle lets you switch between number inputs and canvas drawing.
+- **PDF fix** – Added `pythoncom.CoInitialize()` before calling `docx2pdf`; handled gracefully if COM fails.
+- **Image sizing**  
+  - `PHOTO_BOX_IN["IMAGE_FULL"]` changed to `(2.6, 5.0)` (taller).  
+  - `size_boost` for `IMAGE_PASSPORT` increased to `2.0` (was `1.0`), for `IMAGE_FULL` to `1.8` (was `1.2`).  
+  - Default passport box in `_paragraph_image_box` enlarged to `4.5 × 3.0` (was `3.15 × 2.10`).
+- **Improved reading**  
+  - New crop region `"ocr"` (orange) for separate OCR/MRZ zone.  
+  - Option to use **EasyOCR** (selectable in UI) as an alternative OCR engine.  
+  - `smart_read_passport` now accepts an optional `ocr_image` parameter; if provided, it uses that crop for text extraction.
+
+All updates are backward‑compatible – existing workflows remain intact.
