@@ -24,10 +24,8 @@
   td.ar { text-align: right; direction: rtl; }
   td.answer-yes { color: #FF0000; font-weight: bold; }
   td.answer-no  { color: #000; font-weight: bold; }
-  .photo-frame { border: 1px solid #000; overflow: hidden; margin-top: 4px; line-height: 0; }
-  .photo-frame img { width: 100%; height: auto; display: block; }
-  .row-flex { display: flex; gap: 5px; margin-top: 4px; }
-  .row-flex .photo-frame { flex: none; }
+  .photo-frame { border: 1px solid #000; overflow: hidden; margin-top: 4px; line-height: 0; display: inline-block; }
+  .row-flex { display: flex; gap: 5px; margin-top: 4px; align-items: flex-start; }
 </style>
 </head>
 <body>
@@ -58,7 +56,7 @@
         <tr><td class="label">PLACE OF ISSUED</td><td>ADDIS ABABA</td><td class="ar">مكان الإصدار</td></tr>
         <tr><td class="label">DATE OF EXPIRY</td><td>{{EXPIRY_DATE}}</td><td class="ar">تاريخ الانتهاء</td></tr>
       </table>
-      <div class="photo-frame" style="width:48mm; max-height:60mm;">{{IMAGE_FULL}}</div>
+      <div class="photo-frame">{{IMAGE_FULL}}</div>
     </div>
     <div class="col">
       <div class="section-title">PERSONAL INFORMATION <span class="ar">معلومات شخصية</span></div>
@@ -115,8 +113,8 @@
   </table>
 
   <div class="row-flex">
-    <div class="photo-frame" style="width:35mm; max-height:42mm;">{{IMAGE_3X4}}</div>
-    <div class="photo-frame" style="width:65mm; max-height:42mm;">{{IMAGE_PASSPORT}}</div>
+    <div class="photo-frame">{{IMAGE_3X4}}</div>
+    <div class="photo-frame">{{IMAGE_PASSPORT}}</div>
   </div>
 </div>
 </body>

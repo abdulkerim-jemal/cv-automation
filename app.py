@@ -751,6 +751,21 @@ def fill_cv(template_path, data, images, docx_out, pdf_out):
     for p in list(_iter_all_paragraphs(doc)): _process_paragraph(p, data, images)
     _force_calibri(doc); doc.save(str(docx_out))
 
+    # Compute the exact same box sizes (in inches) used for the .docx images,
+    # so the PDF renders photos at IDENTICAL dimensions -- not
+    # independently-guessed CSS sizes that can drift out of sync.
+    image_sizes_in = {}
+    for key, path in images.items():
+        if not path:
+            continue
+        try:
+            w_in, h_in = _image_box_for_key(key)
+            source = Image.open(path).convert("RGB")
+            _, aw, ah = _fit_image_to_box(source, w_in, h_in, mode=FIT_MODE.get(key, "contain"))
+            image_sizes_in[key] = (aw, ah)
+        except Exception:
+            pass
+
     # --- PDF: render from HTML/CSS instead of converting the .docx ---
     # Why not just convert the .docx? Two independent bugs showed up doing
     # that on the server (Linux + LibreOffice), neither of which happens
@@ -765,7 +780,7 @@ def fill_cv(template_path, data, images, docx_out, pdf_out):
     # is completely unaffected and stays fully editable/perfect in Word.
     try:
         from cv_core.html_pdf import render_pdf_via_html
-        if render_pdf_via_html(data, images, pdf_out):
+        if render_pdf_via_html(data, images, pdf_out, image_sizes_in=image_sizes_in):
             return True
     except Exception as e:
         st.warning(f"HTML PDF renderer note: {e}")

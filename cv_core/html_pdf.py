@@ -82,15 +82,21 @@ def _render_with_wkhtmltopdf(html: str, pdf_out: Path) -> bool:
     return pdf_out.exists() and pdf_out.stat().st_size > 0
 
 
-def render_pdf_via_html(data: dict, images: dict, pdf_out: Path) -> bool:
+def render_pdf_via_html(data: dict, images: dict, pdf_out: Path, image_sizes_in: dict = None) -> bool:
     """
     data:   same dict already used for the docx placeholders,
             e.g. {"NAME": "...", "PASSPORT_NO": "...", ...}
     images: same dict already used for the docx image placeholders,
             e.g. {"IMAGE_FULL": "/path/to/file.jpg", ...} (values are file
             paths, or None if not provided)
+    image_sizes_in: optional dict of {key: (width_inches, height_inches)} --
+            the EXACT dimensions already computed for the .docx version of
+            each photo. Passing these guarantees the PDF places each photo
+            at literally the same size as the Word file, instead of an
+            independently-guessed CSS size that can drift out of sync.
     pdf_out: Path to write the final PDF to
     """
+    image_sizes_in = image_sizes_in or {}
     html = TEMPLATE_PATH.read_text(encoding="utf-8")
 
     # logos
@@ -101,14 +107,19 @@ def render_pdf_via_html(data: dict, images: dict, pdf_out: Path) -> bool:
     for key, val in data.items():
         html = html.replace("{{%s}}" % key, "" if val is None else str(val))
 
-    # image placeholders -> <img> tags
+    # image placeholders -> <img> tags, sized to match the .docx exactly
     for key, path in images.items():
         ph = "{{%s}}" % key
         if ph not in html:
             continue
         if path:
             uri = _img_to_data_uri(Path(path))
-            html = html.replace(ph, f'<img src="{uri}">')
+            if key in image_sizes_in:
+                w_in, h_in = image_sizes_in[key]
+                style = f'width:{w_in*25.4:.2f}mm; height:{h_in*25.4:.2f}mm; display:block;'
+            else:
+                style = 'width:100%; height:auto; display:block;'
+            html = html.replace(ph, f'<img src="{uri}" style="{style}">')
         else:
             html = html.replace(ph, "")
 
