@@ -778,9 +778,17 @@ def fill_cv(template_path, data, images, docx_out, pdf_out):
     # Rendering from HTML avoids both classes of bug entirely, since every
     # element is placed explicitly rather than "floated". The .docx above
     # is completely unaffected and stays fully editable/perfect in Word.
+    # Determine agency + experience level from the template path, so the
+    # HTML/PDF renderer can pick the correct logo/header-color/label --
+    # matching what's actually baked into each of the 4 real .docx templates.
+    tpath_str = str(template_path)
+    agency = "Al Zaid" if "Al Zaid" in tpath_str or "AlZaid" in tpath_str else "Asail"
+    experienced = "non" not in Path(template_path).stem.lower()
+
     try:
         from cv_core.html_pdf import render_pdf_via_html
-        if render_pdf_via_html(data, images, pdf_out, image_sizes_in=image_sizes_in):
+        if render_pdf_via_html(data, images, pdf_out, image_sizes_in=image_sizes_in,
+                                agency=agency, experienced=experienced):
             return True
     except Exception as e:
         st.warning(f"HTML PDF renderer note: {e}")

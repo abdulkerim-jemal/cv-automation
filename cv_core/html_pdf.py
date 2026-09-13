@@ -2,17 +2,14 @@
 HTML/CSS based PDF renderer for the CV.
 
 Why this exists:
-  The old pipeline (python-docx -> LibreOffice --convert-to pdf) depends on
-  LibreOffice correctly shaping Arabic text and substituting fonts it doesn't
-  have installed. On the free Streamlit Cloud server this produced broken
-  Arabic glyphs (e.g. "لا" rendering as a stray "U") even though the same
-  file opened fine in Microsoft Word.
-
+  The old pipeline (python-docx -> LibreOffice --convert-to pdf) has two
+  independent, server-only bugs (never happen in Microsoft Word on a PC):
+    1) Arabic text-shaping bugs on some fonts/edits
+    2) LibreOffice mis-placing inline images inside nested tables, causing
+       them to overlap section headers
   This module renders the exact same CV data as HTML+CSS and converts it to
-  PDF with WeasyPrint (a pure-Python PDF renderer -- no special system binary
-  needed beyond common libraries already available on Debian/Ubuntu). It
-  shapes Arabic text correctly and predictably, sidestepping the whole class
-  of font/shaping bugs LibreOffice has.
+  PDF with WeasyPrint (a pure-Python PDF renderer). Every element gets an
+  explicit position, so neither bug class can happen here.
 
   The .docx output is UNCHANGED and still produced by fill_cv() in app.py --
   this only replaces how the PDF is made.
@@ -26,9 +23,12 @@ from pathlib import Path
 
 TEMPLATE_PATH = Path(__file__).parent / "cv_template.html"
 
-# Put your two logo files here (same ones already used in the Word templates).
-LOGO_LEFT = Path(__file__).parent / "logo_diamond.jpeg"
-LOGO_RIGHT = Path(__file__).parent / "logo_mhr.jpeg"
+ASSETS = Path(__file__).parent
+LOGO_DIAMOND_ASAIL = ASSETS / "logo_diamond.jpeg"
+LOGO_MHR = ASSETS / "logo_mhr.jpeg"
+LOGO_DIAMOND_ALZAID = ASSETS / "logo_diamond_alzaid.jpeg"
+LOGO_ALZAID_SMALL = ASSETS / "logo_alzaid_small.png"
+LOGO_ALZAID_BIG = ASSETS / "logo_alzaid_big.png"
 
 
 def _img_to_data_uri(path: Path) -> str:
@@ -82,26 +82,42 @@ def _render_with_wkhtmltopdf(html: str, pdf_out: Path) -> bool:
     return pdf_out.exists() and pdf_out.stat().st_size > 0
 
 
-def render_pdf_via_html(data: dict, images: dict, pdf_out: Path, image_sizes_in: dict = None) -> bool:
+def render_pdf_via_html(data: dict, images: dict, pdf_out: Path,
+                         image_sizes_in: dict = None,
+                         agency: str = "Asail", experienced: bool = True) -> bool:
     """
-    data:   same dict already used for the docx placeholders,
-            e.g. {"NAME": "...", "PASSPORT_NO": "...", ...}
-    images: same dict already used for the docx image placeholders,
-            e.g. {"IMAGE_FULL": "/path/to/file.jpg", ...} (values are file
-            paths, or None if not provided)
-    image_sizes_in: optional dict of {key: (width_inches, height_inches)} --
-            the EXACT dimensions already computed for the .docx version of
-            each photo. Passing these guarantees the PDF places each photo
-            at literally the same size as the Word file, instead of an
-            independently-guessed CSS size that can drift out of sync.
+    data:   same dict already used for the docx placeholders.
+    images: same dict already used for the docx image placeholders
+            (values are file paths, or None if not provided).
+    image_sizes_in: optional {key: (width_in, height_in)} -- the exact
+            dimensions already computed for the .docx version of each photo,
+            so the PDF places photos at literally the same size.
+    agency: "Asail" or "Al Zaid" -- selects the correct top-right logo,
+            and (for Al Zaid) the extra page-2 logo block.
+    experienced: True for the "Experienced" template (gold header title,
+            "** EXPERIANCED **" label), False for "Non Experienced"
+            (black header title, no label) -- matches the real templates.
     pdf_out: Path to write the final PDF to
     """
     image_sizes_in = image_sizes_in or {}
     html = TEMPLATE_PATH.read_text(encoding="utf-8")
 
-    # logos
-    html = html.replace("{{LOGO_LEFT}}", _img_to_data_uri(LOGO_RIGHT))   # diamond logo, left side in header
-    html = html.replace("{{LOGO_RIGHT}}", _img_to_data_uri(LOGO_LEFT))   # mhr logo, right side in header
+    is_alzaid = "zaid" in agency.lower().replace(" ", "")
+
+    logo_left = LOGO_DIAMOND_ALZAID if is_alzaid else LOGO_DIAMOND_ASAIL
+    logo_right = LOGO_ALZAID_SMALL if is_alzaid else LOGO_MHR
+    html = html.replace("{{LOGO_LEFT}}", _img_to_data_uri(logo_left))
+    html = html.replace("{{LOGO_RIGHT}}", _img_to_data_uri(logo_right))
+
+    html = html.replace("{{HEADER_COLOR}}", "#BF9000" if experienced else "#000000")
+    html = html.replace("{{EXPERIENCED_LABEL}}", "** EXPERIANCED **" if experienced else "")
+
+    if is_alzaid:
+        big_uri = _img_to_data_uri(LOGO_ALZAID_BIG)
+        page2_block = f'<div class="p2-logo"><img src="{big_uri}"></div>'
+    else:
+        page2_block = ""
+    html = html.replace("{{PAGE2_LOGO_BLOCK}}", page2_block)
 
     # text placeholders
     for key, val in data.items():
@@ -123,10 +139,8 @@ def render_pdf_via_html(data: dict, images: dict, pdf_out: Path, image_sizes_in:
         else:
             html = html.replace(ph, "")
 
-    # Try WeasyPrint first (pure-Python, no missing-apt-package risk).
     if _render_with_weasyprint(html, pdf_out):
         return True
-    # Fall back to wkhtmltopdf if it happens to be installed.
     if _render_with_wkhtmltopdf(html, pdf_out):
         return True
     return False
