@@ -751,20 +751,8 @@ def fill_cv(template_path, data, images, docx_out, pdf_out):
     for p in list(_iter_all_paragraphs(doc)): _process_paragraph(p, data, images)
     _force_calibri(doc); doc.save(str(docx_out))
 
-    # --- PDF: render straight from HTML/CSS instead of LibreOffice ---
-    # This avoids LibreOffice's Arabic text-shaping/font-substitution bugs
-    # (e.g. "لا" rendering as a broken glyph on servers without the exact
-    # fonts installed). The .docx above is untouched -- still fully
-    # editable in Word. See cv_core/html_pdf.py for details.
-    try:
-        from cv_core.html_pdf import render_pdf_via_html
-        if render_pdf_via_html(data, images, pdf_out):
-            return True
-    except Exception as e:
-        st.warning(f"HTML PDF renderer note: {e}")
-
-    # --- Fallback: old LibreOffice path, only used if the HTML renderer
-    # above isn't available for some reason ---
+    # --- PDF: convert the exact .docx we just saved, so the PDF can never
+    # mismatch the Word file (same source, same content, same layout). ---
     soffice = _find_soffice()
     if soffice:
         try:
@@ -773,6 +761,16 @@ def fill_cv(template_path, data, images, docx_out, pdf_out):
                 src = Path(td)/(docx_out.stem + ".pdf")
                 if src.exists() and src.stat().st_size > 0: shutil.copyfile(src, pdf_out); return True
         except Exception: pass
+
+    # --- Fallback: HTML/CSS renderer, only used if LibreOffice isn't
+    # available on this machine for some reason. ---
+    try:
+        from cv_core.html_pdf import render_pdf_via_html
+        if render_pdf_via_html(data, images, pdf_out):
+            return True
+    except Exception as e:
+        st.warning(f"HTML PDF renderer note: {e}")
+
     try:
         from docx2pdf import convert as docx_to_pdf
         import pythoncom
@@ -2002,32 +2000,14 @@ if all_approved:
                     note = (per_img[n].get("notes") or "").strip()
                     if note: notes_lines.append(f"{n}: {note}")
                 if notes_lines: (date_root / "notes.txt").write_text("\n".join(notes_lines), encoding="utf-8")
-                summary_path = date_root / "summary.csv"
-                with open(summary_path, "w", newline="", encoding="utf-8-sig") as fh:
-                    writer = csv.writer(fh)
-                    writer.writerow(["Source Image","Name","Passport No.","DOB","Age","Agency","Experience","Position","Country","Years","Religion","Marital Status","Children","Place of Birth","Relative","Issue Date","Expiry Date","Notes"])
-                    for n in file_names:
-                        s = per_img[n]; cd = s.get("cv_data") or {}
-                        writer.writerow([n, cd.get("NAME",""), cd.get("PASSPORT_NO",""), cd.get("DOB",""), cd.get("AGE",""),
-                                         s.get("agency",""), s.get("level",""), cd.get("POSITION",""), cd.get("COUNTRY",""),
-                                         cd.get("YEARS_EXP",""), cd.get("RELIGION",""), cd.get("MARITAL_STATUS",""),
-                                         cd.get("NO_OF_CHILDREN",""), cd.get("HOME_ADDRESS",""), cd.get("RELATIVE",""),
-                                         cd.get("ISSUE_DATE",""), cd.get("EXPIRY_DATE",""), s.get("notes","")])
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                 for item in date_root.rglob("*"):
                     if item.is_file(): zf.write(item, item.relative_to(date_root))
             zip_buffer.seek(0)
             st.success(f"✅ Generated {len(file_names)} CV(s). Saved to: {date_root}")
-            col_dl1, col_dl2 = st.columns(2, gap="small")
-            with col_dl1:
-                st.download_button("📦 Download EVERYTHING (ZIP)", data=zip_buffer.getvalue(),
-                                    file_name=f"All_CVs_{datetime.today():%Y-%m-%d}.zip",
-                                    mime="application/zip", type="primary", use_container_width=True)
-            with col_dl2:
-                if summary_path.exists():
-                    st.download_button("📊 Download Summary (CSV)", data=summary_path.read_bytes(),
-                                        file_name=f"summary_{datetime.today():%Y-%m-%d}.csv",
-                                        mime="text/csv", use_container_width=True)
+            st.download_button("📦 Download EVERYTHING (ZIP)", data=zip_buffer.getvalue(),
+                                file_name=f"All_CVs_{datetime.today():%Y-%m-%d}.zip",
+                                mime="application/zip", type="primary", use_container_width=True)
         except Exception as e:
             st.error(f"Generation failed: {e}")
