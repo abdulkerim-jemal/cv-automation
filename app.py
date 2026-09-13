@@ -766,10 +766,25 @@ def fill_cv(template_path, data, images, docx_out, pdf_out):
         except Exception:
             pass
 
-    # --- PDF: render from HTML/CSS instead of converting the .docx ---
+    # --- PDF: try converting the *actual* .docx first, via WPS itself ---
+    # This is exactly what you already do by hand ("switch extension" in
+    # WPS): WPS opens the real .docx and exports it, using the very same
+    # engine that renders it on screen, so the PDF matches the .docx
+    # pixel-for-pixel -- unlike the HTML re-implementation below.
+    # Only works on Windows with WPS Office installed (e.g. on your desktop
+    # machine); harmlessly returns False on Streamlit Cloud/Linux so the
+    # fallbacks below still run there.
+    try:
+        from cv_core.wps_pdf import convert_docx_to_pdf_via_wps
+        if convert_docx_to_pdf_via_wps(docx_out, pdf_out):
+            return True
+    except Exception as e:
+        st.warning(f"WPS PDF export note: {e}")
+
+    # --- PDF fallback: render from HTML/CSS instead of converting the .docx ---
     # Why not just convert the .docx? Two independent bugs showed up doing
     # that on the server (Linux + LibreOffice), neither of which happens
-    # in Microsoft Word on a PC:
+    # in Microsoft Word/WPS on a PC:
     #   1) Arabic text-shaping bugs (fixed at the template level separately)
     #   2) Floating image anchors landing in the wrong spot / overlapping
     #      text -- Word and LibreOffice resolve ambiguous floating-image
@@ -778,6 +793,9 @@ def fill_cv(template_path, data, images, docx_out, pdf_out):
     # Rendering from HTML avoids both classes of bug entirely, since every
     # element is placed explicitly rather than "floated". The .docx above
     # is completely unaffected and stays fully editable/perfect in Word.
+    # This only runs if WPS isn't available above (e.g. on Streamlit Cloud) --
+    # it will look close, but not pixel-identical to the .docx, since it's a
+    # different render engine.
     # Determine agency + experience level from the template path, so the
     # HTML/PDF renderer can pick the correct logo/header-color/label --
     # matching what's actually baked into each of the 4 real .docx templates.
@@ -1191,6 +1209,24 @@ def _theme_css(mode):
 
     div[data-testid="stAlert"] {{ padding: 4px 10px !important; margin: 0.15rem 0 !important; }}
     div[data-testid="stAlert"] p {{ font-size: 0.78rem !important; margin: 0 !important; }}
+
+    /* Smart-read button: sharp rectangle, pulsing glow so it stands out */
+    .st-key-smart_read_btn .stButton > button {{
+        border-radius: 0 !important;
+        border: 1px solid {accent} !important;
+        animation: smartReadGlow 1.8s ease-in-out infinite;
+    }}
+    .st-key-smart_read_btn .stButton > button:hover {{
+        animation: none !important;
+        box-shadow: 0 0 18px {accent} !important;
+    }}
+    @keyframes smartReadGlow {{
+        0%, 100% {{ box-shadow: 0 0 6px {accent}, 0 0 2px {accent} inset; }}
+        50% {{ box-shadow: 0 0 20px {accent}, 0 0 6px {accent} inset; }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+        .st-key-smart_read_btn .stButton > button {{ animation: none !important; box-shadow: 0 0 10px {accent} !important; }}
+    }}
 
     {dark_extras}
     {colorful_extras}
@@ -1613,8 +1649,9 @@ st.markdown('<span class="step-tag step-2">STEP 2</span>', unsafe_allow_html=Tru
 
 _hdr_l, _hdr_r = st.columns([0.55, 3.45], vertical_alignment="center")
 with _hdr_l:
-    smart_read_clicked = st.button("🚀 Smart read", type="primary", use_container_width=True,
-                                    help="Reads the OCR crop and fills the fields on the right.")
+    with st.container(key="smart_read_btn"):
+        smart_read_clicked = st.button("🚀 Smart read", type="primary", use_container_width=True,
+                                        help="Reads the OCR crop and fills the fields on the right.")
 with _hdr_r:
     st.markdown('<span class="ocr-header">📖 Passport extraction</span>', unsafe_allow_html=True)
 
