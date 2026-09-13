@@ -751,8 +751,26 @@ def fill_cv(template_path, data, images, docx_out, pdf_out):
     for p in list(_iter_all_paragraphs(doc)): _process_paragraph(p, data, images)
     _force_calibri(doc); doc.save(str(docx_out))
 
-    # --- PDF: convert the exact .docx we just saved, so the PDF can never
-    # mismatch the Word file (same source, same content, same layout). ---
+    # --- PDF: render from HTML/CSS instead of converting the .docx ---
+    # Why not just convert the .docx? Two independent bugs showed up doing
+    # that on the server (Linux + LibreOffice), neither of which happens
+    # in Microsoft Word on a PC:
+    #   1) Arabic text-shaping bugs (fixed at the template level separately)
+    #   2) Floating image anchors landing in the wrong spot / overlapping
+    #      text -- Word and LibreOffice resolve ambiguous floating-image
+    #      anchors differently, and there's no reliable way to force them
+    #      to agree from inside the .docx.
+    # Rendering from HTML avoids both classes of bug entirely, since every
+    # element is placed explicitly rather than "floated". The .docx above
+    # is completely unaffected and stays fully editable/perfect in Word.
+    try:
+        from cv_core.html_pdf import render_pdf_via_html
+        if render_pdf_via_html(data, images, pdf_out):
+            return True
+    except Exception as e:
+        st.warning(f"HTML PDF renderer note: {e}")
+
+    # --- Fallbacks, only used if the HTML renderer above isn't available ---
     soffice = _find_soffice()
     if soffice:
         try:
@@ -761,16 +779,6 @@ def fill_cv(template_path, data, images, docx_out, pdf_out):
                 src = Path(td)/(docx_out.stem + ".pdf")
                 if src.exists() and src.stat().st_size > 0: shutil.copyfile(src, pdf_out); return True
         except Exception: pass
-
-    # --- Fallback: HTML/CSS renderer, only used if LibreOffice isn't
-    # available on this machine for some reason. ---
-    try:
-        from cv_core.html_pdf import render_pdf_via_html
-        if render_pdf_via_html(data, images, pdf_out):
-            return True
-    except Exception as e:
-        st.warning(f"HTML PDF renderer note: {e}")
-
     try:
         from docx2pdf import convert as docx_to_pdf
         import pythoncom
