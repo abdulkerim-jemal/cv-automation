@@ -1,1 +1,11 @@
 -r requirements-core.txt
+streamlit
+rembg
+onnxruntime
+pillow
+python-docx
+pymupdf
+opencv-python-headless
+easyocr
+passporteye
+docx2pdf

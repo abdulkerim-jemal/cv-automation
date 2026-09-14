@@ -1,9 +1,6 @@
 tesseract-ocr
 libreoffice
-libpango-1.0-0
-libpangocairo-1.0-0
-libgdk-pixbuf-2.0-0
-libcairo2
-shared-mime-info
 fonts-crosextra-carlito
 fonts-liberation
+libgl1
+libglib2.0-0

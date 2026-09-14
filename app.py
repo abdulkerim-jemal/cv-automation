@@ -7,7 +7,7 @@ from io import BytesIO
 from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -34,6 +34,12 @@ DEFAULT_POSITION = "HOUSE MAID"
 COUNTRY_PRESETS = ["Saudi Arabia", "Indonesia", "SUDAN", "Beirut Lebanon", "Jordan", "Kuwait", "Dubai UAE"]
 YEARS_RANGE = list(range(1, 15))
 OTHER_LABEL = "Other (type manually)"
+
+RELATIVE_OPTIONS = [
+    "self", "meski", "negasa", "dawit", "hajera",
+    "zakir jima", "kalid bediru", "temesgen", "muaz temam",
+]
+RELATIVE_OTHER = "Other (type manually)"
 
 CROP_KEYS = ["passport", "3x4", "full", "ocr"]
 CROP_LABELS = {"passport": "Passport page", "3x4": "3×4 photo", "full": "Full body photo", "ocr": "OCR reading zone"}
@@ -69,6 +75,169 @@ CACHE_KEY = "_uploaded_cache"
 HASH_KEY = "_uploaded_hashes"
 PREVIEW_KEY = "_preview_state"
 SOUND_OPTIONS = ["White noise", "Pink noise", "Brown noise", "Ocean waves", "Rain", "Jungle"]
+
+# ----------------------------------------------------------------------
+# Place-of-birth extraction (layered, OCR-tolerant)
+# ----------------------------------------------------------------------
+_ETHIOPIAN_PLACES = {
+    "ADDIS ABABA","ADDIS","DEBRE MARKOS","DEBRIMARKOS","DEBRE BIRHAN","DEBRE ZEIT",
+    "JIMMA","JINMA","GONDAR","BAHIR DAR","BAHIRDAR","HAWASSA","MEKELLE","MAKALE",
+    "DIRE DAWA","DIREDAWA","ADAMA","NAZRETH","SODDO","WOLITA","WOLAITA","CHAFETA",
+    "GENET","MESKAN","BUTAJIRA","HOSAENA","SILTE","ENDEBER","WOLKITE","DESSIE",
+    "KOMBOLCHA","WOLDIA","ADIGRAT","AXUM","AKSUM","SHIRE","HUMERA","NEKEMTE",
+    "GIMBI","FICHE","DAMBIDOLO","BISHOFTU","MOJO","HOLETA","SELALE","LEGETAFO",
+    "DUKEM","BOSET","ASOSA","HARAR","HARRAR","JIGJIGA","GODE","SEMERA",
+    "LIMU","KOSA","LIMU KOSA","GELAN","ARABSA","GELAN ARABSA",
+    "DAPARA","DABARA","BALE","ARSI","WALLO","GOJJAM","BEGEMEDER","BEGEMIDIR",
+    "SHOA","SHEWA","MENZ","GURAGE","KEMBATA","TAMBARO","SIDAMA","WOLAYTA",
+    "HADIYA","GURAGHE","GEDEO","KEFA","SHEKA","BENCH","MAJI","DAWRO","KONSO",
+    "OROMIA","AMHARA","TIGRAY","SOMALI","AFAR","BENISHANGUL","GAMBELLA","GAMBELA",
+}
+
+_PLACE_BAD_TOKENS = {
+    "ETHIOPIAN","ETHIOPIA","FEDERAL","DEMOCRATIC","REPUBLIC","OF","PASSPORT",
+    "ISSUE","ISSUED","EXPIRY","EXPIRES","BIRTH","PLACE","MIRTH","FHIRTH","FHIRTL",
+    "PIAL","PRPAL","TRMPAL","MACE","NATIONALITY","NATIONAL","AUTHORITY","IMMIGRATION",
+    "CITIZENSHIP","SERVICE","MALE","FEMALE","DATE","SIGNATURE","HOLDER","SURNAME",
+    "GIVEN","NAME","SEX","TYPE","CODE","COUNTRY","PERSONAL","MAIN","DEPARTMENT",
+    "AND","AFFAIRS","VALID","ALL","FOR","COUNTRIES","THE","THIS","PAGE","OBSERVATION",
+    "BEARER",
+}
+
+_PLACE_DATE_TOKENS = {
+    "JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC",
+    "JANUARY","FEBRUARY","MARCH","APRIL","JUNE","JULY","AUGUST","SEPTEMBER",
+    "OCTOBER","NOVEMBER","DECEMBER",
+}
+
+_PLACE_DATE_RE = re.compile(
+    r"\b("
+    r"\d{1,2}\s*[A-Z]{3,}\s*\d{2,4}"
+    r"|\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}"
+    r"|\d{4}[./\-]\d{1,2}[./\-]\d{1,2}"
+    r")\b"
+)
+
+def _clean_place_candidate(s: str) -> str:
+    s = re.sub(r"[^A-Za-z\s\-'.]", " ", (s or "").upper())
+    return re.sub(r"\s+", " ", s).strip()
+
+def _tidy_place_phrase(s: str) -> str:
+    toks = _clean_place_candidate(s).split()
+    out = []
+    for t in toks:
+        if len(t) <= 1:                 continue
+        if t in _PLACE_DATE_TOKENS:     continue
+        if t in _PLACE_BAD_TOKENS:      continue
+        if re.fullmatch(r"\d+", t):     continue
+        out.append(t)
+    return " ".join(out[:4]).strip()
+
+def _is_place_like(s: str) -> bool:
+    if not s: return False
+    s = s.strip().upper()
+    if len(s) < 3 or len(s) > 45: return False
+    if not re.fullmatch(r"[A-Z][A-Z\s\-'.]*", s): return False
+    if re.search(r"\d", s): return False
+    tokens = s.split()
+    if not tokens or len(tokens) > 5: return False
+    if any(t in _PLACE_DATE_TOKENS for t in tokens): return False
+    if any(t in _PLACE_BAD_TOKENS  for t in tokens): return False
+    return any(len(t) > 1 for t in tokens)
+
+def _extract_place_of_birth(lines, dob: str = "") -> str:
+    """Extract Ethiopian place of birth with layered fallbacks."""
+    if not lines:
+        return ""
+
+    for raw in lines:
+        lu = raw.upper()
+        for place in _ETHIOPIAN_PLACES:
+            if re.search(r"\b" + re.escape(place) + r"\b", lu):
+                cand = _tidy_place_phrase(lu)
+                if _is_place_like(cand):
+                    return cand
+
+    for i, raw in enumerate(lines):
+        lu = raw.upper()
+        m = _PLACE_DATE_RE.search(lu)
+        if not m:
+            continue
+        after = _tidy_place_phrase(lu[m.end():])
+        if _is_place_like(after):
+            return after
+        for off in range(1, 4):
+            if i + off >= len(lines): break
+            cand = _tidy_place_phrase(lines[i + off])
+            if _is_place_like(cand):
+                return cand
+
+    label_re = re.compile(
+        r"(PLACE\s*OF\s*BIRTH|BIRTH\s*PLACE|PIAL|PRPAL|TRMPAL|"
+        r"MACE\s*OF\s*MIRTH|PLACE|BIRTH|MIRTH|FHIRTH|FHIRTL)",
+        re.IGNORECASE,
+    )
+    for i, raw in enumerate(lines):
+        m = label_re.search(raw)
+        if not m:
+            continue
+        after = _tidy_place_phrase(raw.upper()[m.end():])
+        if _is_place_like(after):
+            return after
+        for off in range(1, 4):
+            if i + off >= len(lines): break
+            line_next = lines[i + off].upper()
+            cand = _tidy_place_phrase(line_next)
+            if _is_place_like(cand):
+                return cand
+            dm = _PLACE_DATE_RE.search(line_next)
+            if dm:
+                after_date = _tidy_place_phrase(line_next[dm.end():])
+                if _is_place_like(after_date):
+                    return after_date
+
+    return ""
+
+# ----------------------------------------------------------------------
+# Automatic white-background for 3x4 and full-body photos
+# ----------------------------------------------------------------------
+_REMBG_SESSION = None
+
+def _get_rembg_session(model_name: str = "u2net_human_seg"):
+    """Lazy-load a rembg session (first call downloads the model)."""
+    global _REMBG_SESSION
+    if _REMBG_SESSION is None:
+        from rembg import new_session
+        _REMBG_SESSION = new_session(model_name)
+    return _REMBG_SESSION
+
+def whiten_background(pil_img: Image.Image,
+                      model: str = "u2net_human_seg",
+                      feather_px: int = 2,
+                      pure_white: int = 255) -> Image.Image:
+    """Cut subject out of pil_img and paste onto a pure white background."""
+    try:
+        from rembg import remove
+        session = _get_rembg_session(model)
+        cutout = remove(pil_img, session=session)
+    except Exception:
+        return pil_img
+
+    cutout = cutout.convert("RGBA")
+    if feather_px > 0:
+        alpha = cutout.split()[-1]
+        alpha = alpha.filter(ImageFilter.GaussianBlur(feather_px))
+        cutout.putalpha(alpha)
+
+    bg = Image.new("RGBA", cutout.size, (pure_white, pure_white, pure_white, 255))
+    return Image.alpha_composite(bg, cutout).convert("RGB")
+
+def _crop_and_maybe_whiten(src_img, box, key, whiten: bool):
+    """Crop `box`; whiten background for portrait/full body."""
+    crop = src_img.crop(box)
+    if whiten and key in ("3x4", "full"):
+        crop = whiten_background(crop)
+    return crop
 
 # ----------------------------------------------------------------------
 # Ambient noise generator
@@ -218,12 +387,11 @@ def _load_session_json(json_str: str):
     if data.get("k_passport") is not None: st.session_state.k_passport = float(data["k_passport"])
     if data.get("theme_mode"): st.session_state.theme_mode = data["theme_mode"]
     if data.get("uploaded_hashes"): st.session_state[HASH_KEY] = data["uploaded_hashes"]
-    # Force a clean switch on next render
     st.session_state.pop("active_file", None)
     st.session_state.pop(PREVIEW_KEY, None)
     st.session_state["_force_date_reseed"] = True
 
-def _preview_pdf_bytes(cv, agency, level, active_name, files_list, sboxes, rotation=0):
+def _preview_pdf_bytes(cv, agency, level, active_name, files_list, sboxes, rotation=0, whiten=False):
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         a0 = (REAL_AGENCIES if agency == BOTH_LABEL else [agency])[0]
@@ -236,9 +404,9 @@ def _preview_pdf_bytes(cv, agency, level, active_name, files_list, sboxes, rotat
             if rotation: simg = simg.rotate(-rotation, expand=True)
         except Exception: return None
         imgs = {"IMAGE_PASSPORT": td_path/"passport.jpg","IMAGE_3X4": td_path/"3x4.jpg","IMAGE_FULL": td_path/"full.jpg"}
-        simg.crop(sboxes["passport"]).save(imgs["IMAGE_PASSPORT"], quality=95)
-        simg.crop(sboxes["3x4"]).save(imgs["IMAGE_3X4"], quality=95)
-        simg.crop(sboxes["full"]).save(imgs["IMAGE_FULL"], quality=95)
+        _crop_and_maybe_whiten(simg, sboxes["passport"], "passport", whiten).save(imgs["IMAGE_PASSPORT"], quality=95)
+        _crop_and_maybe_whiten(simg, sboxes["3x4"],      "3x4",      whiten).save(imgs["IMAGE_3X4"],      quality=95)
+        _crop_and_maybe_whiten(simg, sboxes["full"],     "full",     whiten).save(imgs["IMAGE_FULL"],     quality=95)
         docx_p = td_path/"preview.docx"; pdf_p = td_path/"preview.pdf"
         fill_cv(t0, cv, imgs, docx_p, pdf_p)
         if pdf_p.exists(): return pdf_p.read_bytes()
@@ -252,7 +420,7 @@ def _blank_image_slot():
     return {"boxes": None,"extracted": None,"cv_data": None,"approved": False,
             "agency": REAL_AGENCIES[0],"level": "Non-Experienced","validity_years": 5,
             "religion": "MUSLIM","position": DEFAULT_POSITION,"country": COUNTRY_PRESETS[0],
-            "years_exp": 2,"notes": "", "rotation": 0}
+            "years_exp": 2,"notes": "", "rotation": 0, "white_bg": False}
 
 def _clear_image_widgets():
     to_delete = []
@@ -261,7 +429,8 @@ def _clear_image_widgets():
         elif k.endswith(("_day","_month","_year")) and not k.startswith("_"): to_delete.append(k)
     for k in to_delete: del st.session_state[k]
     for k in ("_prev_dob_mode","_prev_issue_mode","_prev_expiry_mode","_prev_cfg_validity",
-              "_prev_cfg_level","_last_dob_for_suggestion","auto_read_pending","auto_read_source"):
+              "_prev_cfg_level","_last_dob_for_suggestion","auto_read_pending","auto_read_source",
+              "relative_select","relative_manual"):
         st.session_state.pop(k, None)
 
 def _switch_to(new_name):
@@ -293,29 +462,47 @@ def _clean_passport_name(name: str) -> str:
     for tok in DEFAULT_NAME_TOKENS: cleaned = cleaned.replace(tok, "")
     return re.sub(r"\s+", " ", cleaned).strip()
 
-def _normalise_date_ethiopian(value: str) -> str:
+def _normalise_date_ethiopian(value: str, prefer_20xx: bool = False) -> str:
+    """
+    Parse an Ethiopian-style date string into DD/MM/YYYY.
+    Accepts separators: . / - and space-separated text months.
+    `prefer_20xx=True` forces 2-digit years into the 2000s — used for
+    ISSUE and EXPIRY dates, which are always 20xx on modern passports.
+    """
     if not value: return ""
     value = value.upper().strip()
     month_map = {"JAN":"01","FEB":"02","MAR":"03","APR":"04","MAY":"05","JUN":"06","JUL":"07","AUG":"08","SEP":"09","OCT":"10","NOV":"11","DEC":"12","JANUARY":"01","FEBRUARY":"02","MARCH":"03","APRIL":"04","JUNE":"06","JULY":"07","AUGUST":"08","SEPTEMBER":"09","OCTOBER":"10","NOVEMBER":"11","DECEMBER":"12"}
+
+    def _fix_year(y_str: str) -> str:
+        if len(y_str) == 4: return y_str
+        yi = int(y_str)
+        if prefer_20xx:
+            return f"20{yi:02d}"
+        return f"19{yi:02d}" if yi >= 80 else f"20{yi:02d}"
+
+    # 1) Text month: "13 MAY 03" / "18 SEP 2003"
     m = re.search(r"(\d{1,2})\s*([A-Z]{3,})\s*(\d{2,4})", value)
     if m:
         day, mon, year = m.groups(); day = f"{int(day):02d}"; mon = month_map.get(mon[:3], "01")
-        if len(year) == 2:
-            yi = int(year); year = f"19{year}" if yi >= 80 else f"20{year}"
+        year = _fix_year(year)
         try: datetime(int(year), int(mon), int(day)); return f"{day}/{mon}/{year}"
         except ValueError: pass
-    m = re.search(r"(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})", value)
+
+    # 2) DD/MM/YYYY  ·  DD-MM-YYYY  ·  DD.MM.YYYY
+    m = re.search(r"(\d{1,2})[./\-](\d{1,2})[./\-](\d{2,4})", value)
     if m:
         day, mon, year = m.groups()
-        if len(year) == 2:
-            yi = int(year); year = f"19{year}" if yi >= 80 else f"20{year}"
+        year = _fix_year(year)
         try: datetime(int(year), int(mon), int(day)); return f"{int(day):02d}/{int(mon):02d}/{year}"
         except ValueError: pass
-    m = re.search(r"(\d{4})[/-](\d{1,2})[/-](\d{1,2})", value)
+
+    # 3) YYYY.MM.DD  ·  YYYY/MM/DD  ·  YYYY-MM-DD
+    m = re.search(r"(\d{4})[./\-](\d{1,2})[./\-](\d{1,2})", value)
     if m:
         year, mon, day = m.groups()
         try: datetime(int(year), int(mon), int(day)); return f"{int(day):02d}/{int(mon):02d}/{year}"
         except ValueError: pass
+
     return value
 
 def _parse_ethiopian_passport(text: str) -> dict:
@@ -357,39 +544,66 @@ def _parse_ethiopian_passport(text: str) -> dict:
             year = 1900 + yy if yy > 30 else 2000 + yy
             try: datetime(year, mm, dd); out["DOB"] = f"{dd:02d}/{mm:02d}/{year}"
             except ValueError: pass
+
+    # ── DOB from OCR text ──
     if not out["DOB"]:
+        # a) Look for a line with "BIRTH" (with OCR typo variants)
         for line in lines:
-            if "BIRTH" in line.upper() or "DOB" in line.upper() or "DATE OF BIRTH" in line.upper():
-                m = re.search(r"(\d{1,2}\s*[A-Z]{3,}\s*\d{2,4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", line.upper())
-                if m: out["DOB"] = _normalise_date_ethiopian(m.group(1)); break
+            lu = line.upper()
+            if any(tag in lu for tag in ("BIRTH", "BIT!", "BIT)", "BIRT", "DOB")):
+                m = re.search(
+                    r"(\d{1,2}\s*[A-Z]{3,}\s*\d{2,4}"
+                    r"|\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}"
+                    r"|\d{4}[./\-]\d{1,2}[./\-]\d{1,2})",
+                    lu,
+                )
+                if m:
+                    norm = _normalise_date_ethiopian(m.group(1))
+                    if norm and re.match(r"\d{2}/\d{2}/\d{4}", norm):
+                        out["DOB"] = norm
+                        break
+        # b) Absolute fallback: scan every date-looking token, keep first in DOB range
         if not out["DOB"]:
-            all_dates = re.findall(r"\b(\d{1,2}\s*[A-Z]{3,}\s*\d{2,4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b", upper)
+            all_dates = re.findall(
+                r"\b(\d{1,2}\s*[A-Z]{3,}\s*\d{2,4}"
+                r"|\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}"
+                r"|\d{4}[./\-]\d{1,2}[./\-]\d{1,2})\b",
+                upper,
+            )
             for d in all_dates:
                 norm = _normalise_date_ethiopian(d)
                 if norm and re.match(r"\d{2}/\d{2}/\d{4}", norm):
-                    parts = norm.split("/"); yr = int(parts[2])
-                    if 1940 <= yr <= 2010: out["DOB"] = norm; break
+                    yr = int(norm.split("/")[2])
+                    if 1970 <= yr <= 2012:
+                        out["DOB"] = norm
+                        break
+
+    # ── ISSUE / EXPIRY (always 20xx) ──
     issue_str = ""; expiry_str = ""
     if mrz2 and len(mrz2) >= 27:
         m = re.search(r"[FM](\d{6})", mrz2)
         if m:
             yy = int(m.group(1)[0:2]); mm = int(m.group(1)[2:4]); dd = int(m.group(1)[4:6])
-            year = 1900 + yy if yy > 30 else 2000 + yy
+            year = 2000 + yy
             try: datetime(year, mm, dd); expiry_str = f"{dd:02d}/{mm:02d}/{year}"
             except ValueError: pass
     for line in lines:
         lu = line.upper()
         if ("ISSUE" in lu or "ISSUED" in lu) and not issue_str:
-            m = re.search(r"(\d{1,2}\s*[A-Z]{3,}\s*\d{2,4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", lu)
-            if m: issue_str = _normalise_date_ethiopian(m.group(1))
+            m = re.search(r"(\d{1,2}\s*[A-Z]{3,}\s*\d{2,4}|\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4})", lu)
+            if m: issue_str = _normalise_date_ethiopian(m.group(1), prefer_20xx=True)
         if ("EXPIR" in lu or "VALID" in lu or "DATE OF EXPIRY" in lu) and not expiry_str:
-            m = re.search(r"(\d{1,2}\s*[A-Z]{3,}\s*\d{2,4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", lu)
-            if m: expiry_str = _normalise_date_ethiopian(m.group(1))
+            m = re.search(r"(\d{1,2}\s*[A-Z]{3,}\s*\d{2,4}|\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4})", lu)
+            if m: expiry_str = _normalise_date_ethiopian(m.group(1), prefer_20xx=True)
     if not issue_str or not expiry_str:
-        all_dates = re.findall(r"\b(\d{1,2}\s*[A-Z]{3,}\s*\d{2,4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b", upper)
+        all_dates = re.findall(
+            r"\b(\d{1,2}\s*[A-Z]{3,}\s*\d{2,4}"
+            r"|\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4})\b",
+            upper,
+        )
         parsed_dates = []
         for d in all_dates:
-            norm = _normalise_date_ethiopian(d)
+            norm = _normalise_date_ethiopian(d, prefer_20xx=True)
             if norm and re.match(r"\d{2}/\d{2}/\d{4}", norm): parsed_dates.append(norm)
         if len(parsed_dates) >= 2:
             if not issue_str: issue_str = parsed_dates[0]
@@ -397,21 +611,63 @@ def _parse_ethiopian_passport(text: str) -> dict:
         elif len(parsed_dates) == 1:
             if not expiry_str: expiry_str = parsed_dates[0]
     out["ISSUE_DATE"] = issue_str; out["EXPIRY_DATE"] = expiry_str
-    for line in lines:
-        lu = line.upper()
-        if "PLACE OF BIRTH" in lu or "BIRTH PLACE" in lu or "PLACE" in lu:
-            parts = line.split(":", 1)
-            if len(parts) == 2 and parts[1].strip(): out["HOME_ADDRESS"] = parts[1].strip(); break
-            idx = lu.find("PLACE")
-            if idx != -1:
-                rem = line[idx+5:].strip()
-                if rem: out["HOME_ADDRESS"] = rem; break
-    if not out["HOME_ADDRESS"]:
-        places = ["ADDIS ABABA","DEBRE MARKOS","DEBRIMARKOS","LIMU","GENET","CHAFETA","JIMMA","JINMA","GONDAR","BAHIR DAR","HAWASSA","MEKELLE","DIRE DAWA","ADAMA","NAZRETH"]
+
+    # ── PLACE OF BIRTH ──
+    out["HOME_ADDRESS"] = _extract_place_of_birth(lines, dob=out.get("DOB", ""))
+
+    # ── DOB fallback #1: on the "ETHIOPIAN" nationality line ──
+    if not out["DOB"]:
         for line in lines:
-            for place in places:
-                if place in line.upper(): out["HOME_ADDRESS"] = line.strip(); break
-            if out["HOME_ADDRESS"]: break
+            lu = line.upper()
+            if "ETHIOPIAN" in lu:
+                m = re.search(
+                    r"(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}|\d{1,2}\s*[A-Z]{3,}\s*\d{2,4})",
+                    lu,
+                )
+                if m:
+                    norm = _normalise_date_ethiopian(m.group(1))
+                    if norm and re.match(r"\d{2}/\d{2}/\d{4}", norm):
+                        yr = int(norm.split("/")[2])
+                        if 1970 <= yr <= 2012:
+                            out["DOB"] = norm
+                            break
+
+    # ── DOB fallback #2: same line as the place of birth ──
+    if not out["DOB"] and out.get("HOME_ADDRESS"):
+        first_pob_token = out["HOME_ADDRESS"].split()[0].upper() if out["HOME_ADDRESS"].split() else ""
+        if first_pob_token:
+            for line in lines:
+                lu = line.upper()
+                if first_pob_token in lu:
+                    m = re.search(
+                        r"(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}|\d{1,2}\s*[A-Z]{3,}\s*\d{2,4})",
+                        lu,
+                    )
+                    if m:
+                        norm = _normalise_date_ethiopian(m.group(1))
+                        if norm and re.match(r"\d{2}/\d{2}/\d{4}", norm):
+                            yr = int(norm.split("/")[2])
+                            if 1970 <= yr <= 2012:
+                                out["DOB"] = norm
+                                break
+
+    # ── DOB fallback #3: any line with a known Ethiopian place + a date ──
+    if not out["DOB"]:
+        for line in lines:
+            lu = line.upper()
+            if any(p in lu for p in _ETHIOPIAN_PLACES):
+                m = re.search(
+                    r"(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}|\d{1,2}\s*[A-Z]{3,}\s*\d{2,4})",
+                    lu,
+                )
+                if m:
+                    norm = _normalise_date_ethiopian(m.group(1))
+                    if norm and re.match(r"\d{2}/\d{2}/\d{4}", norm):
+                        yr = int(norm.split("/")[2])
+                        if 1970 <= yr <= 2012:
+                            out["DOB"] = norm
+                            break
+
     if out["DOB"]:
         try:
             d = datetime.strptime(out["DOB"], "%d/%m/%Y"); now = datetime.today()
@@ -451,7 +707,6 @@ def _add_passport_years(issue: str, years: int) -> str:
     except (TypeError, ValueError): return ""
 
 def _date_sanity_warnings(dob: str, issue: str, expiry: str) -> list:
-    """Return list of human-readable warnings for obviously bad dates."""
     warns = []
     today = datetime.today()
     if dob:
@@ -751,29 +1006,6 @@ def fill_cv(template_path, data, images, docx_out, pdf_out):
     for p in list(_iter_all_paragraphs(doc)): _process_paragraph(p, data, images)
     _force_calibri(doc); doc.save(str(docx_out))
 
-    # Compute the exact same box sizes (in inches) used for the .docx images,
-    # so the PDF renders photos at IDENTICAL dimensions -- not
-    # independently-guessed CSS sizes that can drift out of sync.
-    image_sizes_in = {}
-    for key, path in images.items():
-        if not path:
-            continue
-        try:
-            w_in, h_in = _image_box_for_key(key)
-            source = Image.open(path).convert("RGB")
-            _, aw, ah = _fit_image_to_box(source, w_in, h_in, mode=FIT_MODE.get(key, "contain"))
-            image_sizes_in[key] = (aw, ah)
-        except Exception:
-            pass
-
-    # --- PDF: try converting the *actual* .docx first, via WPS itself ---
-    # This is exactly what you already do by hand ("switch extension" in
-    # WPS): WPS opens the real .docx and exports it, using the very same
-    # engine that renders it on screen, so the PDF matches the .docx
-    # pixel-for-pixel -- unlike the HTML re-implementation below.
-    # Only works on Windows with WPS Office installed (e.g. on your desktop
-    # machine); harmlessly returns False on Streamlit Cloud/Linux so the
-    # fallbacks below still run there.
     try:
         from cv_core.wps_pdf import convert_docx_to_pdf_via_wps
         if convert_docx_to_pdf_via_wps(docx_out, pdf_out):
@@ -781,37 +1013,6 @@ def fill_cv(template_path, data, images, docx_out, pdf_out):
     except Exception as e:
         st.warning(f"WPS PDF export note: {e}")
 
-    # --- PDF fallback: render from HTML/CSS instead of converting the .docx ---
-    # Why not just convert the .docx? Two independent bugs showed up doing
-    # that on the server (Linux + LibreOffice), neither of which happens
-    # in Microsoft Word/WPS on a PC:
-    #   1) Arabic text-shaping bugs (fixed at the template level separately)
-    #   2) Floating image anchors landing in the wrong spot / overlapping
-    #      text -- Word and LibreOffice resolve ambiguous floating-image
-    #      anchors differently, and there's no reliable way to force them
-    #      to agree from inside the .docx.
-    # Rendering from HTML avoids both classes of bug entirely, since every
-    # element is placed explicitly rather than "floated". The .docx above
-    # is completely unaffected and stays fully editable/perfect in Word.
-    # This only runs if WPS isn't available above (e.g. on Streamlit Cloud) --
-    # it will look close, but not pixel-identical to the .docx, since it's a
-    # different render engine.
-    # Determine agency + experience level from the template path, so the
-    # HTML/PDF renderer can pick the correct logo/header-color/label --
-    # matching what's actually baked into each of the 4 real .docx templates.
-    tpath_str = str(template_path)
-    agency = "Al Zaid" if "Al Zaid" in tpath_str or "AlZaid" in tpath_str else "Asail"
-    experienced = "non" not in Path(template_path).stem.lower()
-
-    try:
-        from cv_core.html_pdf import render_pdf_via_html
-        if render_pdf_via_html(data, images, pdf_out, image_sizes_in=image_sizes_in,
-                                agency=agency, experienced=experienced):
-            return True
-    except Exception as e:
-        st.warning(f"HTML PDF renderer note: {e}")
-
-    # --- Fallbacks, only used if the HTML renderer above isn't available ---
     soffice = _find_soffice()
     if soffice:
         try:
@@ -1144,50 +1345,6 @@ def _theme_css(mode):
     .crop-help-body {{ font-size: 0.76rem; line-height: 1.5; color: {text_soft}; }}
     .crop-help-body b {{ color: {text}; font-weight: 700; }}
 
-    /* ============ Aurora over mountains · shooting stars ============ */
-    .crop-motivation {{
-        margin-top: 8px !important;
-        padding: 0 !important;
-        border-radius: 8px;
-        border: 1px solid #241a3a;
-        height: 320px;
-        min-height: 320px;
-        position: relative;
-        overflow: hidden;
-        background: linear-gradient(180deg, #03020a 0%, #08061a 30%, #100a24 55%, #0a0718 78%, #05030a 100%);
-        box-shadow: inset 0 0 60px rgba(0,0,0,0.9);
-    }}
-    .aurora-band {{ position: absolute; top: 0; left: 0; width: 100%; height: 65%; filter: blur(26px); opacity: 0.55; mix-blend-mode: screen; pointer-events: none; }}
-    .aurora-band.a1 {{ background: linear-gradient(180deg, rgba(110,220,170,0.60), transparent 75%); animation: auroraShift 8s ease-in-out infinite; }}
-    .aurora-band.a2 {{ background: linear-gradient(180deg, rgba(167,139,250,0.55), transparent 70%); animation: auroraShift 11s ease-in-out infinite reverse; }}
-    .aurora-band.a3 {{ background: linear-gradient(180deg, rgba(96,165,250,0.45), transparent 65%); animation: auroraShift 14s ease-in-out infinite; }}
-    @keyframes auroraShift {{ 0%, 100% {{ transform: translateX(-6%) skewX(-4deg); opacity: 0.40; }} 50% {{ transform: translateX(6%) skewX(4deg); opacity: 0.75; }} }}
-    .mountain-back, .mountain-front {{ position: absolute; bottom: 0; left: 0; width: 100%; pointer-events: none; }}
-    .mountain-back {{ height: 48%; background: linear-gradient(180deg, #1a1230 0%, #0d081c 100%); clip-path: polygon(0% 100%, 0% 62%, 12% 42%, 22% 56%, 34% 32%, 46% 52%, 58% 28%, 70% 48%, 82% 34%, 92% 52%, 100% 42%, 100% 100%); }}
-    .mountain-front {{ height: 32%; background: #04020a; clip-path: polygon(0% 100%, 0% 72%, 18% 52%, 32% 68%, 46% 44%, 60% 62%, 74% 48%, 88% 66%, 100% 56%, 100% 100%); }}
-    .shooting-star {{ position: absolute; width: 110px; height: 2px; border-radius: 2px; background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(200,176,232,0.55) 55%, #ffffff 100%); transform: rotate(35deg); transform-origin: right center; opacity: 0; pointer-events: none; z-index: 4; }}
-    .shooting-star::after {{ content: ""; position: absolute; right: -3px; top: -2px; width: 5px; height: 5px; background: #ffffff; border-radius: 50%; box-shadow: 0 0 10px #ffffff, 0 0 20px rgba(167,139,250,0.9); }}
-    .shooting-star.ss1 {{ top: 10%; left: -15%; animation: shootStar 7s linear infinite; animation-delay: 0s; }}
-    .shooting-star.ss2 {{ top: 22%; left: -15%; animation: shootStar 8s linear infinite; animation-delay: 2.4s; }}
-    .shooting-star.ss3 {{ top: 4%; left: -15%; animation: shootStar 9s linear infinite; animation-delay: 4.8s; }}
-    @keyframes shootStar {{ 0% {{ top: 8%; left: -15%; opacity: 0; }} 6% {{ opacity: 1; }} 45% {{ top: 58%; left: 85%; opacity: 1; }} 55% {{ top: 62%; left: 92%; opacity: 0; }} 100% {{ top: 62%; left: 92%; opacity: 0; }} }}
-    .star {{ position: absolute; border-radius: 50%; background: #c8b0e8; box-shadow: 0 0 4px #c8b0e8; animation: twinkle 1.2s ease-in-out infinite; z-index: 2; }}
-    .star.amber {{ background: #f0b860; box-shadow: 0 0 6px #f0b860; }}
-    .star.purple {{ background: #a78bfa; box-shadow: 0 0 6px #a78bfa; }}
-    .star.s1 {{ top: 12%; left: 8%; width: 2px; height: 2px; animation-delay: 0.0s; }}
-    .star.s2 {{ top: 24%; left: 18%; width: 3px; height: 3px; animation-delay: 0.4s; }}
-    .star.s3 {{ top: 8%; left: 32%; width: 2px; height: 2px; animation-delay: 0.8s; }}
-    .star.s4 {{ top: 30%; left: 44%; width: 3px; height: 3px; animation-delay: 1.2s; }}
-    .star.s5 {{ top: 14%; left: 56%; width: 2px; height: 2px; animation-delay: 0.3s; }}
-    .star.s6 {{ top: 26%; left: 66%; width: 3px; height: 3px; animation-delay: 0.9s; }}
-    .star.s7 {{ top: 6%; left: 78%; width: 2px; height: 2px; animation-delay: 1.5s; }}
-    .star.s8 {{ top: 18%; left: 90%; width: 3px; height: 3px; animation-delay: 0.6s; }}
-    .star.s9 {{ top: 36%; left: 24%; width: 2px; height: 2px; animation-delay: 1.8s; }}
-    .star.s10 {{ top: 40%; left: 72%; width: 3px; height: 3px; animation-delay: 0.2s; }}
-    .star.s11 {{ top: 4%; left: 50%; width: 2px; height: 2px; animation-delay: 1.0s; }}
-    .star.s12 {{ top: 33%; left: 88%; width: 2px; height: 2px; animation-delay: 1.4s; }}
-    @keyframes twinkle {{ 0%, 100% {{ opacity: 0.20; transform: scale(0.5); }} 50% {{ opacity: 1.0; transform: scale(1.5); }} }}
-
     @media (prefers-reduced-motion: reduce) {{
         .aurora-band, .shooting-star, .star, .preview-hero-badge {{ animation: none !important; }}
     }}
@@ -1210,22 +1367,110 @@ def _theme_css(mode):
     div[data-testid="stAlert"] {{ padding: 4px 10px !important; margin: 0.15rem 0 !important; }}
     div[data-testid="stAlert"] p {{ font-size: 0.78rem !important; margin: 0 !important; }}
 
-    /* Smart-read button: sharp rectangle, pulsing glow so it stands out */
+    /* ================================================================
+       🚀 SMART READ — modern gradient pill with animated glow
+       ================================================================ */
     .st-key-smart_read_btn .stButton > button {{
-        border-radius: 0 !important;
-        border: 1px solid {accent} !important;
-        animation: smartReadGlow 1.8s ease-in-out infinite;
+        position: relative;
+        border-radius: 999px !important;
+        border: none !important;
+        padding: 0 20px !important;
+        height: 2.6rem !important;
+        min-height: 2.6rem !important;
+        font-weight: 800 !important;
+        font-size: 0.85rem !important;
+        letter-spacing: 0.12em !important;
+        text-transform: uppercase !important;
+        color: #ffffff !important;
+        background:
+            linear-gradient(#0b0f1f, #0b0f1f) padding-box,
+            conic-gradient(from var(--angle, 0deg),
+                #22d3ee, #a78bfa, #f472b6, #facc15, #22d3ee) border-box !important;
+        border: 2px solid transparent !important;
+        box-shadow:
+            0 0 0 1px rgba(255,255,255,0.05) inset,
+            0 6px 18px -6px rgba(34,211,238,0.55),
+            0 6px 18px -6px rgba(167,139,250,0.55);
+        overflow: hidden;
+        transition: transform 0.15s ease, box-shadow 0.25s ease;
+        animation:
+            smartBorderSpin 4s linear infinite,
+            smartPulse 2.4s ease-in-out infinite;
+    }}
+    @property --angle {{
+        syntax: "<angle>";
+        initial-value: 0deg;
+        inherits: false;
+    }}
+    @keyframes smartBorderSpin {{
+        to {{ --angle: 360deg; }}
+    }}
+    @keyframes smartPulse {{
+        0%, 100% {{
+            box-shadow:
+                0 0 0 1px rgba(255,255,255,0.05) inset,
+                0 6px 18px -6px rgba(34,211,238,0.55),
+                0 6px 18px -6px rgba(167,139,250,0.55),
+                0 0 0 0 rgba(167,139,250,0.5);
+        }}
+        50% {{
+            box-shadow:
+                0 0 0 1px rgba(255,255,255,0.08) inset,
+                0 8px 24px -6px rgba(34,211,238,0.85),
+                0 8px 24px -6px rgba(167,139,250,0.85),
+                0 0 0 12px rgba(167,139,250,0);
+        }}
+    }}
+    .st-key-smart_read_btn .stButton > button::after {{
+        content: "";
+        position: absolute;
+        top: -50%; left: -60%;
+        width: 45%; height: 200%;
+        background: linear-gradient(115deg,
+            transparent 0%,
+            rgba(255,255,255,0.35) 45%,
+            rgba(255,255,255,0.85) 50%,
+            rgba(255,255,255,0.35) 55%,
+            transparent 100%);
+        transform: skewX(-20deg);
+        animation: smartShine 3.2s ease-in-out infinite;
+        pointer-events: none;
+    }}
+    @keyframes smartShine {{
+        0%   {{ left: -60%; }}
+        55%  {{ left: 130%; }}
+        100% {{ left: 130%; }}
+    }}
+    .st-key-smart_read_btn .stButton > button p,
+    .st-key-smart_read_btn .stButton > button span,
+    .st-key-smart_read_btn .stButton > button div {{
+        color: #ffffff !important;
+        font-weight: 800 !important;
+        font-size: 0.85rem !important;
+        letter-spacing: 0.12em !important;
+        text-shadow: 0 0 6px rgba(167,139,250,0.7), 0 0 12px rgba(34,211,238,0.5);
+        position: relative;
+        z-index: 2;
     }}
     .st-key-smart_read_btn .stButton > button:hover {{
-        animation: none !important;
-        box-shadow: 0 0 18px {accent} !important;
+        transform: translateY(-2px) scale(1.015);
+        background:
+            linear-gradient(#0b0f1f, #0b0f1f) padding-box,
+            conic-gradient(from var(--angle, 0deg),
+                #22d3ee, #a78bfa, #f472b6, #facc15, #22d3ee) border-box !important;
+        box-shadow:
+            0 0 0 1px rgba(255,255,255,0.1) inset,
+            0 12px 32px -6px rgba(34,211,238,0.9),
+            0 12px 32px -6px rgba(167,139,250,0.9);
     }}
-    @keyframes smartReadGlow {{
-        0%, 100% {{ box-shadow: 0 0 6px {accent}, 0 0 2px {accent} inset; }}
-        50% {{ box-shadow: 0 0 20px {accent}, 0 0 6px {accent} inset; }}
+    .st-key-smart_read_btn .stButton > button:active {{
+        transform: translateY(0) scale(0.98);
     }}
     @media (prefers-reduced-motion: reduce) {{
-        .st-key-smart_read_btn .stButton > button {{ animation: none !important; box-shadow: 0 0 10px {accent} !important; }}
+        .st-key-smart_read_btn .stButton > button,
+        .st-key-smart_read_btn .stButton > button::after {{
+            animation: none !important;
+        }}
     }}
 
     {dark_extras}
@@ -1288,7 +1533,6 @@ with st.sidebar:
                 st.session_state.pop(k, None)
             st.rerun()
 
-    # ── Session save / load ──
     with st.expander("💾 Save / Load session"):
         st.caption("Save the full working state (all crops, approved CVs, settings) to a JSON file — reload later to continue.")
         if st.session_state.get("per_image"):
@@ -1366,6 +1610,11 @@ with st.sidebar:
         st.write("EasyOCR:", "✅" if e.easyocr else "❌")
         st.write("MRZ package:", "✅" if e.mrz_package else "❌")
         st.write("PassportEye:", "✅" if e.passporteye else "❌")
+        try:
+            import rembg  # noqa
+            st.write("rembg (white bg):", "✅")
+        except Exception:
+            st.write("rembg (white bg):", "❌  (pip install rembg onnxruntime)")
         if e.languages: st.caption("Languages: " + ", ".join(e.languages))
 
 # ----------------------------------------------------------------------
@@ -1427,7 +1676,6 @@ approved_count = sum(1 for n in file_names if per_img[n]["approved"])
 with st.container(key="sticky_progress"):
     st.progress(approved_count / total, text=f"✅ Approved {approved_count} of {total} images")
 
-# ── Keyboard shortcuts (injected into parent doc) ──
 if st.session_state.get("enable_shortcuts", True):
     components.html("""
     <script>
@@ -1484,7 +1732,6 @@ with c4: cfg_religion = st.selectbox("CV religion", RELIGION_OPTIONS, key="cfg_r
 slot["agency"] = cfg_agency; slot["level"] = cfg_level
 slot["validity_years"] = int(cfg_validity); slot["religion"] = cfg_religion
 
-# ── Apply to all button ──
 _apply_col1, _apply_col2 = st.columns([1, 1], gap="small")
 with _apply_col1:
     if st.button("📋 Apply these 4 settings to ALL images", key="apply_cfg_all",
@@ -1498,7 +1745,6 @@ with _apply_col1:
         st.success(f"Applied to all {len(file_names)} image(s).")
         st.rerun()
 
-# ── Copy from previous ──
 _prev_name = None
 try:
     _idx_active = file_names.index(active_name)
@@ -1529,7 +1775,6 @@ st.session_state["_prev_cfg_level"] = cfg_level
 
 cur_validity = int(cfg_validity); cur_level = cfg_level; cur_agency = cfg_agency; cur_religion = cfg_religion
 
-# ── Load image with per-image rotation ──
 raw_img = Image.open(BytesIO(current_file.getvalue())).convert("RGB")
 _rot = int(slot.get("rotation", 0)) % 360
 img = raw_img.rotate(-_rot, expand=True) if _rot else raw_img
@@ -1681,7 +1926,6 @@ with fields_col:
         st.session_state["place_of_birth_in"] = saved_cv.get("HOME_ADDRESS") or ex.get("HOME_ADDRESS", "")
         st.session_state["marital_select"] = saved_cv.get("MARITAL_STATUS", "SINGLE")
         st.session_state["children_select"] = saved_cv.get("NO_OF_CHILDREN", "NIL")
-        st.session_state.setdefault("relative_name", saved_cv.get("RELATIVE", ""))
 
     st.markdown('<div class="compact-card">', unsafe_allow_html=True)
     st.markdown('<div class="details-header">👤 Personal Information</div>', unsafe_allow_html=True)
@@ -1691,7 +1935,28 @@ with fields_col:
     st.markdown('<div class="field-row-gap"></div>', unsafe_allow_html=True)
     c1, c2 = st.columns(2, gap="large")
     with c1: pob = st.text_input("Place of birth", key="place_of_birth_in")
-    with c2: relative = st.text_input("Relative", key="relative_name")
+    with c2:
+        if "relative_select" not in st.session_state:
+            cur_rel = (slot.get("cv_data") or {}).get("RELATIVE", "")
+            if cur_rel:
+                match = next((r for r in RELATIVE_OPTIONS if r.lower() == cur_rel.lower()), None)
+                st.session_state["relative_select"] = match if match else RELATIVE_OTHER
+                st.session_state["relative_manual"] = "" if match else cur_rel
+            else:
+                st.session_state["relative_select"] = RELATIVE_OPTIONS[0]
+                st.session_state["relative_manual"] = ""
+        rel_choice = st.selectbox(
+            "Relative",
+            RELATIVE_OPTIONS + [RELATIVE_OTHER],
+            key="relative_select",
+            format_func=lambda s: s.title() if s != RELATIVE_OTHER else s,
+        )
+        if rel_choice == RELATIVE_OTHER:
+            relative = st.text_input("Relative (type manually)",
+                                      key="relative_manual",
+                                      placeholder="e.g. sister, uncle")
+        else:
+            relative = rel_choice
 
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
     st.markdown('<div class="details-header">📅 Passport Details</div>', unsafe_allow_html=True)
@@ -1762,7 +2027,6 @@ with fields_col:
             expiry = ""; st.caption("⚠️ No issue date yet — switch to Manual or set issue above.")
     else: expiry = date_picker("Expiry date", 2021, 2038)
 
-    # ── Date sanity warnings ──
     _dw = _date_sanity_warnings(dob, issue, expiry)
     for _w in _dw:
         st.markdown(f'<div class="warn-bar">⚠️ {_w}</div>', unsafe_allow_html=True)
@@ -1775,15 +2039,33 @@ with fields_col:
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
     notes_key = f"notes_visible_{active_name}"
     st.session_state.setdefault(notes_key, False)
-    if st.button(("📝 Hide note" if st.session_state[notes_key] else "📝 Add note"),
-                 key=f"notes_btn_{active_name}", use_container_width=False):
-        st.session_state[notes_key] = not st.session_state[notes_key]; st.rerun()
+
+    _tool_row = st.columns([1, 1], gap="small")
+    with _tool_row[0]:
+        if st.button(("📝 Hide note" if st.session_state[notes_key] else "📝 Add note"),
+                     key=f"notes_btn_{active_name}", use_container_width=True):
+            st.session_state[notes_key] = not st.session_state[notes_key]; st.rerun()
+    with _tool_row[1]:
+        _wb_on = bool(slot.get("white_bg", False))
+        _wb_label = "⚪ White BG: ON" if _wb_on else "⚪ White BG: OFF"
+        if st.button(_wb_label, key=f"whitebg_btn_{active_name}",
+                     use_container_width=True,
+                     help="Toggle a pure-white background for THIS image's 3×4 and full-body photos. "
+                          "The first click downloads a ~170 MB segmentation model (~10 s), then cached."):
+            slot["white_bg"] = not _wb_on
+            st.rerun()
+
     if st.session_state[notes_key]:
         notes_val = st.text_area("📝 Notes (optional)", value=slot.get("notes", ""),
                                   key=f"img_notes_{active_name}",
                                   placeholder="e.g. Called customer — address changed",
                                   height=68)
         slot["notes"] = notes_val
+
+    if slot.get("white_bg"):
+        st.caption("⚪ White background is **ON** for this image — 3×4 and full-body will use pure white.")
+    else:
+        st.caption("⚪ White background is **OFF** — the original background is kept.")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1792,7 +2074,6 @@ with ocr_preview_col:
     if ocr_crop is not None: st.image(ocr_crop, caption=f"{ocr_crop.width} × {ocr_crop.height} px", width=440)
     else: st.warning("No OCR crop selected.")
 
-    # ── Raw OCR text (collapsible) ──
     with st.expander("🔤 Raw OCR text", expanded=False):
         raw_text = (ex or {}).get("_ocr_text", "") or ""
         engine = (ex or {}).get("_engine", "")
@@ -1852,7 +2133,7 @@ def _build_preview_cv():
     yrs = f"{years_exp} YEARS" if lvl == "Experienced" else "NIL"
     return {"NAME": _clean_passport_name(name.strip().upper()), "PASSPORT_NO": passport.strip().upper(),
             "ISSUE_DATE": issue, "EXPIRY_DATE": expiry, "DOB": dob, "HOME_ADDRESS": pob.strip().upper(),
-            "RELATIVE": relative.strip().upper(), "RELIGION": religion, "MARITAL_STATUS": marital,
+            "RELATIVE": relative.strip(), "RELIGION": religion, "MARITAL_STATUS": marital,
             "NO_OF_CHILDREN": children, "AGE": _age_from_dob(dob), "POSITION": position_value,
             "COUNTRY": country_value if lvl == "Experienced" else "NIL", "YEARS_EXP": yrs,
             "YEARS_EXP2": yrs if lvl == "Experienced" else "FIRST TIME"}
@@ -1862,7 +2143,8 @@ if preview_clicked:
     else:
         preview_cv = _build_preview_cv()
         pdf_bytes = _preview_pdf_bytes(preview_cv, cur_agency, cur_level, active_name, files, boxes,
-                                        rotation=int(slot.get("rotation", 0)))
+                                        rotation=int(slot.get("rotation", 0)),
+                                        whiten=bool(slot.get("white_bg", False)))
         if pdf_bytes:
             st.session_state[PREVIEW_KEY] = {"file": active_name, "cv": preview_cv, "pdf_bytes": pdf_bytes}
         else: st.error("Preview could not be generated.")
@@ -1916,7 +2198,8 @@ if pv and pv.get("file") == active_name and pv.get("pdf_bytes"):
                 slot["boxes"] = new_boxes_edit
                 st.session_state.boxes = new_boxes_edit
                 nb = _preview_pdf_bytes(pv["cv"], cur_agency, cur_level, active_name, files, new_boxes_edit,
-                                         rotation=int(slot.get("rotation", 0)))
+                                         rotation=int(slot.get("rotation", 0)),
+                                         whiten=bool(slot.get("white_bg", False)))
                 if nb:
                     st.session_state[PREVIEW_KEY]["pdf_bytes"] = nb
                 st.session_state.canvas_version = st.session_state.get("canvas_version", 0) + 1
@@ -1952,7 +2235,8 @@ if pv and pv.get("file") == active_name and pv.get("pdf_bytes"):
 
         if st.button("🔄 Update Preview", key=f"pv_update_{active_name}", use_container_width=True, type="primary"):
             new_bytes = _preview_pdf_bytes(pc, cur_agency, cur_level, active_name, files, boxes,
-                                            rotation=int(slot.get("rotation", 0)))
+                                            rotation=int(slot.get("rotation", 0)),
+                                            whiten=bool(slot.get("white_bg", False)))
             if new_bytes:
                 st.session_state[PREVIEW_KEY] = {"file": active_name, "cv": pc, "pdf_bytes": new_bytes}; st.rerun()
             else: st.error("Could not regenerate preview.")
@@ -1990,7 +2274,7 @@ if approve_clicked:
         years_str = f"{years_exp} YEARS" if cur_level == "Experienced" else "NIL"
         cv_data = {"NAME": _clean_passport_name(name_v.strip().upper()), "PASSPORT_NO": passport_v.strip().upper(),
                    "ISSUE_DATE": issue_v, "EXPIRY_DATE": expiry_v, "DOB": dob_v, "HOME_ADDRESS": pob_v.strip().upper(),
-                   "RELATIVE": relative_v.strip().upper(), "RELIGION": religion_v, "MARITAL_STATUS": marital_v,
+                   "RELATIVE": relative_v.strip(), "RELIGION": religion_v, "MARITAL_STATUS": marital_v,
                    "NO_OF_CHILDREN": children_v, "AGE": _age_from_dob(dob_v), "POSITION": position_v,
                    "COUNTRY": country_v if cur_level == "Experienced" else "NIL", "YEARS_EXP": years_str,
                    "YEARS_EXP2": years_str if cur_level == "Experienced" else "FIRST TIME"}
@@ -2030,12 +2314,13 @@ if all_approved:
                     s = per_img[n]; cv_data = s["cv_data"]; sboxes = s["boxes"]
                     s_agency = s["agency"]; s_level = s["level"]
                     s_rot = int(s.get("rotation", 0))
+                    _whiten = bool(s.get("white_bg", False))
                     f_obj = next(f for f in files if f.name == n)
                     simg = Image.open(BytesIO(f_obj.getvalue())).convert("RGB")
                     if s_rot: simg = simg.rotate(-s_rot, expand=True)
-                    passport_crop_i = simg.crop(sboxes["passport"])
-                    p3x4_crop_i = simg.crop(sboxes["3x4"])
-                    full_crop_i = simg.crop(sboxes["full"])
+                    passport_crop_i = _crop_and_maybe_whiten(simg, sboxes["passport"], "passport", _whiten)
+                    p3x4_crop_i     = _crop_and_maybe_whiten(simg, sboxes["3x4"],      "3x4",      _whiten)
+                    full_crop_i     = _crop_and_maybe_whiten(simg, sboxes["full"],     "full",     _whiten)
                     cand_name = safe_name(cv_data["NAME"])
                     agencies_i = REAL_AGENCIES if s_agency == BOTH_LABEL else [s_agency]
                     templates_i = {a: find_template(a, s_level) for a in agencies_i}

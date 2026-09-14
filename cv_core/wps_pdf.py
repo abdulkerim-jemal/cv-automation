@@ -3,11 +3,6 @@ Convert the *actual* generated .docx to PDF by automating WPS Office itself
 (Windows only), instead of re-rendering the CV independently in HTML/CSS.
 
 Why this exists:
-  html_pdf.py rebuilds the CV from scratch as HTML and rasterizes that with
-  WeasyPrint. That's a totally different layout engine from Word/WPS, so the
-  PDF can never be pixel-identical to the .docx -- different font metrics,
-  line-breaking, image placement math, etc.
-
   WPS's own "switch extension" / Save As PDF works perfectly because it's
   the SAME engine that renders the .docx on screen -- there's no
   re-implementation step, so nothing can drift.
